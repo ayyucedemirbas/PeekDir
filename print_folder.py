@@ -1,58 +1,97 @@
 import os
 import argparse
+import json
 from collections import defaultdict
 
-def print_directory(path, indent_level):
-    base_name = os.path.basename(os.path.normpath(path))
-    print('    ' * indent_level + f"{base_name}/")
+def build_structure(path, truncate_limit=5):
+    name = os.path.basename(os.path.normpath(path))
+    node = {
+        "name": name,
+        "type": "directory",
+        "children": []
+    }
     
     try:
         entries = os.listdir(path)
     except PermissionError:
-        print('    ' * (indent_level + 1) + "[Permission denied]")
-        return
+        node["error"] = "Permission denied"
+        return node
 
-    dirs = []
-    files = []
+    dirs, files = [], []
     for entry in entries:
         full_path = os.path.join(path, entry)
         if os.path.isdir(full_path):
             dirs.append(entry)
         else:
             files.append(entry)
-    
-    dirs.sort()
-    files.sort()
-    
+
+
+    for dir_name in sorted(dirs):
+        full_dir_path = os.path.join(path, dir_name)
+        node["children"].append(build_structure(full_dir_path, truncate_limit))
+
     file_groups = defaultdict(list)
-    for file in files:
+    for file in sorted(files):
         ext = os.path.splitext(file)[1].lower()
         file_groups[ext].append(file)
-    
-    processed_files = []
+
     for ext in sorted(file_groups.keys()):
         group = file_groups[ext]
-        if len(group) > 5:
-            processed_files.extend(group[:5])
-            remaining = len(group) - 5
-            message = f"... {remaining} more {ext} files" if ext else f"... {remaining} more files"
-            processed_files.append(message)
+        if len(group) > truncate_limit:
+            truncated = {
+                "type": "truncation",
+                "message": f"... {len(group)-truncate_limit} more {ext} files"
+            }
+            node["children"].extend([
+                {"type": "file", "name": f} for f in group[:truncate_limit]
+            ])
+            node["children"].append(truncated)
         else:
-            processed_files.extend(group)
-    
-    for dir_name in dirs:
-        full_dir_path = os.path.join(path, dir_name)
-        print_directory(full_dir_path, indent_level + 1)
-    
-    for file_entry in processed_files:
-        print('    ' * (indent_level + 1) + file_entry)
+            node["children"].extend([
+                {"type": "file", "name": f} for f in group
+            ])
+
+    return node
+
+def print_console_structure(node, indent=0):
+    print("    " * indent + f"{node['name']}/")
+    for child in node["children"]:
+        if child["type"] == "directory":
+            print_console_structure(child, indent + 1)
+        else:
+            prefix = "    " * (indent + 1)
+            print(prefix + (child["name"] if child["type"] == "file" else child["message"]))
 
 def main():
-    parser = argparse.ArgumentParser(description='Print folder structure with file truncation.')
-    parser.add_argument('root_dir', nargs='?', default='.', help='Root directory to start from')
+    parser = argparse.ArgumentParser(description="PeekDir - Smart directory structure visualization")
+    parser.add_argument("root_dir", nargs="?", default=".", help="Root directory to scan")
+    parser.add_argument("--output", help="Output file path")
+    parser.add_argument("--format", choices=["json", "txt"], default="txt",
+                      help="Output format (only if using --output)")
+    parser.add_argument("--truncate", type=int, default=5,
+                      help="Number of files to show before truncation")
+
     args = parser.parse_args()
-    root_dir = os.path.abspath(args.root_dir)
-    print_directory(root_dir, 0)
+    structure = build_structure(os.path.abspath(args.root_dir), args.truncate)
+
+    print_console_structure(structure)
+
+    if args.output:
+        if args.format == "json":
+            with open(args.output, "w") as f:
+                json.dump(structure, f, indent=2)
+        elif args.format == "txt":
+            with open(args.output, "w") as f:
+                def write_lines(node, indent=0):
+                    f.write("    " * indent + f"{node['name']}/\n")
+                    for child in node["children"]:
+                        if child["type"] == "directory":
+                            write_lines(child, indent + 1)
+                        else:
+                            line = "    " * (indent + 1)
+                            line += child["name"] if child["type"] == "file" else child["message"]
+                            f.write(line + "\n")
+                write_lines(structure)
 
 if __name__ == "__main__":
     main()
